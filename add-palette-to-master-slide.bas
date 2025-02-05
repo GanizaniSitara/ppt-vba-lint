@@ -42,7 +42,7 @@ Sub AddSwatchesToSlideMaster()
     For i = 0 To totalSwatches - 1
         Set shp = sldMaster.Shapes.AddShape(msoShapeRectangle, _
             startX + i * (swatchW + gap), startY, swatchW, swatchH)
-        shp.Fill.ForeColor.RGB = HexToLong(hexColors(i))
+        shp.Fill.ForeColor.RGB = HexToLong(CStr(hexColors(i)))
         shp.Line.Visible = msoFalse
         shapeNames(i) = shp.Name
     Next i
