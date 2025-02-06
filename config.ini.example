@@ -1,0 +1,43 @@
+; Configuration file for ColorAuditor.
+; Place this file in C:\temp\config.ini.
+; Lines starting with a semicolon (;) are comments.
+; 
+; [fonts] section: Define approved fonts.
+; Format: key = value
+[fonts]
+normal = Helvetica
+light = Helvetica Light
+medium = Helvetica Medium
+
+; [colours] section: Define approved colours.
+; Format: Name = HexCode|Description
+[colours]
+Yellow = #FFFF98|Light yellow
+Lime = #C3F5BA|Lime
+BrightBlue = #001276|Bright blue
+BrightMint = #AFFDFD|Bright mint
+BrightPurple = #5C1E5B|Bright purple
+Black = #000000|Black
+Stone = #E8E8C9|Stone
+BrightYellow = #FFFF00|Bright yellow
+LightTeal = #007481|Light teal
+DarkBlue = #00385D|Dark blue
+LightBlue = #0076B6|Light blue
+DarkPurple = #4C3D6C|Dark purple
+LightPurple = #E1C0E2|Light purple
+LightGrey = #D9D9D9|Light grey
+LightOrange = #FFE05A|Light orange
+Teal = #006666|Teal
+Mint = #CDF5E8|Mint
+ActiveBlue = #006DE3|Active blue
+LightClaret = #FFC9C9|Light claret
+ElectricViolet = #7A0FF9|Electric violet
+DarkGrey = #515151|Dark grey
+Orange = #FFCB05|Orange
+DarkTeal = #004750|Dark Teal
+Green = #3F7F37|Green
+ElectricBlue = #0000FF|Electric blue
+BrightClaret = #C7273A|Bright claret
+DarkClaret = #752157|Dark claret
+White = #FFFFFF|White
+Cyan = #00AEEF|Cyan
