@@ -1,3 +1,4 @@
+Attribute VB_Name = "Module1"
 Sub GenerateDiagramInCurrentSlide(xmlPath As String, _
     excludedLayerNames As Variant, backLayerNames As Variant, _
     lineShadeDiff As Long, useStandardColors As Boolean)
@@ -26,6 +27,8 @@ Sub GenerateDiagramInCurrentSlide(xmlPath As String, _
     ' Dictionary mapping drawio shape IDs to PPT shapes.
     Dim shapeMap As Object
     Set shapeMap = CreateObject("Scripting.Dictionary")
+    Dim generatedShapes As Collection
+    Set generatedShapes = New Collection
     
     Dim vertexNodes As MSXML2.IXMLDOMNodeList
     Set vertexNodes = xmlDoc.SelectNodes("//mxCell[@vertex='1']")
@@ -73,13 +76,12 @@ Sub GenerateDiagramInCurrentSlide(xmlPath As String, _
         If Not node.ParentNode Is Nothing Then
             If LCase(node.ParentNode.nodeName) = "object" Then
                 If Not node.ParentNode.Attributes.getNamedItem("label") Is Nothing Then
-                    labelFromParent = Trim(node.ParentNode.Attributes.getNamedItem("label").Text)
+                    labelFromParent = DecodeHtmlText(node.ParentNode.Attributes.getNamedItem("label").Text, htmlDoc)
                 End If
             End If
         End If
         If Not node.Attributes.getNamedItem("value") Is Nothing Then
-            htmlDoc.body.innerHTML = node.Attributes.getNamedItem("value").Text
-            labelFromValue = Trim(htmlDoc.body.innerText)
+            labelFromValue = DecodeHtmlText(node.Attributes.getNamedItem("value").Text, htmlDoc)
         End If
         If labelFromParent <> "" And labelFromValue <> "" Then
             labelText = labelFromParent & vbCrLf & labelFromValue
@@ -91,7 +93,7 @@ Sub GenerateDiagramInCurrentSlide(xmlPath As String, _
             labelText = FormatLabelText(node, labelText)
         End If
         If Not node.Attributes.getNamedItem("description") Is Nothing Then
-            labelText = labelText & vbCrLf & Trim(node.Attributes.getNamedItem("description").Text)
+            labelText = AppendNonEmptyLine(labelText, DecodeHtmlText(node.Attributes.getNamedItem("description").Text, htmlDoc))
         End If
 
         If Not node.Attributes.getNamedItem("style") Is Nothing Then
@@ -110,6 +112,7 @@ Sub GenerateDiagramInCurrentSlide(xmlPath As String, _
         End If
 
         Set shp = pptSlide.Shapes.AddShape(shapeType, xPos, yPos, widthVal, heightVal)
+        generatedShapes.Add shp
         shp.TextFrame2.TextRange.Text = labelText
         shp.TextFrame2.WordWrap = msoFalse
 
@@ -128,35 +131,46 @@ Sub GenerateDiagramInCurrentSlide(xmlPath As String, _
             shp.ZOrder msoSendToBack
         End If
 
-        pos = InStr(1, styleStr, "fillColor=")
-        If pos > 0 Then
-            fillColorStr = Mid(styleStr, pos + 10, 7)
-            If useStandardColors Then
-                fillColorStr = GetClosestStandardColor(fillColorStr, hexColors)
-            End If
-            Dim fillRGB As Long
-            fillRGB = HexToRGB(fillColorStr)
-            If (shapeType = msoShapeRectangle Or shapeType = msoShapeRoundedRectangle) And fillRGB = RGB(0, 0, 0) Then
+        fillColorStr = GetStyleValue(styleStr, "fillColor")
+        If fillColorStr <> "" Then
+            If LCase(fillColorStr) = "none" Then
                 shp.Fill.Visible = msoFalse
-            Else
-                shp.Fill.ForeColor.RGB = fillRGB
+            ElseIf IsHexColor(fillColorStr) Then
+                If useStandardColors Then
+                    fillColorStr = GetClosestStandardColor(fillColorStr, hexColors)
+                End If
+                Dim fillRGB As Long
+                fillRGB = HexToRGB(fillColorStr)
+                If (shapeType = msoShapeRectangle Or shapeType = msoShapeRoundedRectangle) And fillRGB = RGB(0, 0, 0) Then
+                    shp.Fill.Visible = msoFalse
+                Else
+                    shp.Fill.ForeColor.RGB = fillRGB
+                End If
             End If
         End If
 
         If shp.Fill.Visible = msoFalse Then shp.ZOrder msoBringToFront
 
-        pos = InStr(1, styleStr, "strokeColor=")
-        If pos > 0 Then
-            strokeColorStr = Mid(styleStr, pos + 12, 7)
-            Dim baseLineRGB As Long
-            baseLineRGB = HexToRGB(strokeColorStr)
-            shp.Line.ForeColor.RGB = DarkenColorRGB(baseLineRGB, lineShadeDiff)
+        strokeColorStr = GetStyleValue(styleStr, "strokeColor")
+        If strokeColorStr <> "" Then
+            If LCase(strokeColorStr) = "none" Then
+                shp.Line.Visible = msoFalse
+            ElseIf IsHexColor(strokeColorStr) Then
+                Dim baseLineRGB As Long
+                baseLineRGB = HexToRGB(strokeColorStr)
+                shp.Line.ForeColor.RGB = DarkenColorRGB(baseLineRGB, lineShadeDiff)
+            End If
         End If
         shp.Line.Weight = 0.5
 
         If Not node.Attributes.getNamedItem("id") Is Nothing Then
             currentId = node.Attributes.getNamedItem("id").Text
-            shapeMap.Add currentId, shp
+            If shapeMap.Exists(currentId) Then
+                shapeMap.Remove currentId
+                shapeMap.Add currentId, shp
+            Else
+                shapeMap.Add currentId, shp
+            End If
         End If
 
 NextVertex:
@@ -179,44 +193,60 @@ NextVertex:
             targetId = node.Attributes.getNamedItem("target").Text
         End If
 
-        Set geoNode = node.SelectSingleNode("mxGeometry")
-        If geoNode Is Nothing Then GoTo NextEdge
+        Dim sourceShape As Shape, targetShape As Shape
+        Set sourceShape = Nothing
+        Set targetShape = Nothing
+        If sourceId <> "" Then
+            If shapeMap.Exists(sourceId) Then Set sourceShape = shapeMap(sourceId)
+        End If
+        If targetId <> "" Then
+            If shapeMap.Exists(targetId) Then Set targetShape = shapeMap(targetId)
+        End If
 
-        Set sourcePtNode = geoNode.SelectSingleNode("mxPoint[@as='sourcePoint']")
-        Set targetPtNode = geoNode.SelectSingleNode("mxPoint[@as='targetPoint']")
+        Set geoNode = node.SelectSingleNode("mxGeometry")
+        If geoNode Is Nothing And sourceShape Is Nothing And targetShape Is Nothing Then GoTo NextEdge
+
+        Set sourcePtNode = Nothing
+        Set targetPtNode = Nothing
+        If Not geoNode Is Nothing Then
+            Set sourcePtNode = geoNode.SelectSingleNode("mxPoint[@as='sourcePoint']")
+            Set targetPtNode = geoNode.SelectSingleNode("mxPoint[@as='targetPoint']")
+        End If
+
         If Not sourcePtNode Is Nothing Then
-            If Not sourcePtNode.Attributes.getNamedItem("x") Is Nothing Then
-                sourceX = Val(sourcePtNode.Attributes.getNamedItem("x").Text)
-            Else
-                sourceX = 0
-            End If
-            If Not sourcePtNode.Attributes.getNamedItem("y") Is Nothing Then
-                sourceY = Val(sourcePtNode.Attributes.getNamedItem("y").Text)
-            Else
-                sourceY = 0
-            End If
+            sourceX = GetPointCoordinate(sourcePtNode, "x", 0)
+            sourceY = GetPointCoordinate(sourcePtNode, "y", 0)
+        ElseIf Not sourceShape Is Nothing Then
+            sourceX = ShapeCenterX(sourceShape)
+            sourceY = ShapeCenterY(sourceShape)
         Else
             sourceX = 0: sourceY = 0
         End If
+
         If Not targetPtNode Is Nothing Then
-            If Not targetPtNode.Attributes.getNamedItem("x") Is Nothing Then
-                targetX = Val(targetPtNode.Attributes.getNamedItem("x").Text)
-            Else
-                targetX = 0
-            End If
-            If Not targetPtNode.Attributes.getNamedItem("y") Is Nothing Then
-                targetY = Val(targetPtNode.Attributes.getNamedItem("y").Text)
-            Else
-                targetY = 0
-            End If
+            targetX = GetPointCoordinate(targetPtNode, "x", 0)
+            targetY = GetPointCoordinate(targetPtNode, "y", 0)
+        ElseIf Not targetShape Is Nothing Then
+            targetX = ShapeCenterX(targetShape)
+            targetY = ShapeCenterY(targetShape)
         Else
             targetX = 0: targetY = 0
         End If
 
         Dim conn As Shape
         Set conn = pptSlide.Shapes.AddConnector(msoConnectorStraight, sourceX, sourceY, targetX, targetY)
+        generatedShapes.Add conn
         conn.Line.ForeColor.RGB = RGB(0, 0, 0)
         conn.Line.Weight = 0.5
+
+        If Not sourceShape Is Nothing Then
+            ConnectConnectorEndpoint conn, True, sourceShape, targetX, targetY
+        End If
+        If Not targetShape Is Nothing Then
+            ConnectConnectorEndpoint conn, False, targetShape, sourceX, sourceY
+        End If
+
+        edgeStyle = ""
         If Not node.Attributes.getNamedItem("style") Is Nothing Then
             edgeStyle = node.Attributes.getNamedItem("style").Text
             If InStr(1, edgeStyle, "dashed", vbTextCompare) > 0 Then
@@ -229,14 +259,29 @@ NextVertex:
         Else
             conn.Line.DashStyle = msoLineSolid
         End If
+
+        strokeColorStr = GetStyleValue(edgeStyle, "strokeColor")
+        If strokeColorStr <> "" Then
+            If LCase(strokeColorStr) = "none" Then
+                conn.Line.Visible = msoFalse
+            ElseIf IsHexColor(strokeColorStr) Then
+                conn.Line.ForeColor.RGB = HexToRGB(strokeColorStr)
+            End If
+        End If
+        ApplyConnectorArrowheads conn, edgeStyle
 NextEdge:
     Next node
+
+    If generatedShapes.Count = 0 Then
+        Debug.Print "No shapes generated from XML."
+        Exit Sub
+    End If
 
     '--- Determine Bounding Box for Scaling ---
     Dim shpItem As Shape
     Dim bbMinX As Single, bbMinY As Single, bbMaxX As Single, bbMaxY As Single
     bbMinX = 1E+30: bbMinY = 1E+30: bbMaxX = -1E+30: bbMaxY = -1E+30
-    For Each shpItem In pptSlide.Shapes
+    For Each shpItem In generatedShapes
         Dim lVal As Single, tVal As Single, rVal As Single, bVal As Single
         lVal = shpItem.Left
         tVal = shpItem.Top
@@ -251,6 +296,10 @@ NextEdge:
     Dim diagramWidth As Single, diagramHeight As Single
     diagramWidth = bbMaxX - bbMinX
     diagramHeight = bbMaxY - bbMinY
+    If diagramWidth <= 0 Or diagramHeight <= 0 Then
+        Debug.Print "Generated diagram has no measurable bounds."
+        Exit Sub
+    End If
 
     Dim slideWidth As Single, slideHeight As Single
     slideWidth = pptPres.PageSetup.SlideWidth
@@ -271,7 +320,7 @@ NextEdge:
     Dim scaled As Boolean: scaled = False
     If scaleFactor < 1 Then
         scaled = True
-        For Each shpItem In pptSlide.Shapes
+        For Each shpItem In generatedShapes
             shpItem.Left = (shpItem.Left - bbMinX) * scaleFactor + margin
             shpItem.Top = (shpItem.Top - bbMinY) * scaleFactor + margin
             shpItem.Width = shpItem.Width * scaleFactor
@@ -288,7 +337,7 @@ NextEdge:
             shpItem.Line.Weight = 0.5
         Next shpItem
     Else
-        For Each shpItem In pptSlide.Shapes
+        For Each shpItem In generatedShapes
             shpItem.Left = shpItem.Left + offX
             shpItem.Top = shpItem.Top + offY
         Next shpItem
@@ -336,24 +385,198 @@ Function GetAbsoluteCoordinates(xmlDoc As MSXML2.DOMDocument60, node As MSXML2.I
 End Function
 
 '------------------------------------------------------------
+Function DecodeHtmlText(ByVal value As String, ByRef htmlDoc As MSHTML.HTMLDocument) As String
+    On Error GoTo PlainText
+    htmlDoc.body.innerHTML = value
+    DecodeHtmlText = Trim(htmlDoc.body.innerText)
+    Exit Function
+PlainText:
+    DecodeHtmlText = Trim(value)
+End Function
+
+'------------------------------------------------------------
+Function AppendNonEmptyLine(ByVal baseText As String, ByVal newText As String) As String
+    newText = Trim(newText)
+    If newText = "" Then
+        AppendNonEmptyLine = baseText
+    ElseIf Trim(baseText) = "" Then
+        AppendNonEmptyLine = newText
+    Else
+        AppendNonEmptyLine = baseText & vbCrLf & newText
+    End If
+End Function
+
+'------------------------------------------------------------
+Function GetLabelAttribute(ByVal node As MSXML2.IXMLDOMNode, ByVal attributeName As String) As String
+    If Not node.Attributes Is Nothing Then
+        If Not node.Attributes.getNamedItem(attributeName) Is Nothing Then
+            GetLabelAttribute = node.Attributes.getNamedItem(attributeName).Text
+            Exit Function
+        End If
+    End If
+
+    If Not node.ParentNode Is Nothing Then
+        If LCase(node.ParentNode.nodeName) = "object" Then
+            If Not node.ParentNode.Attributes Is Nothing Then
+                If Not node.ParentNode.Attributes.getNamedItem(attributeName) Is Nothing Then
+                    GetLabelAttribute = node.ParentNode.Attributes.getNamedItem(attributeName).Text
+                    Exit Function
+                End If
+            End If
+        End If
+    End If
+
+    GetLabelAttribute = ""
+End Function
+
+'------------------------------------------------------------
 Function FormatLabelText(ByVal node As MSXML2.IXMLDOMNode, ByVal lbl As String) As String
     Dim parts() As String, i As Long, result As String, placeholder As String, attrValue As String
     parts = Split(lbl, "%")
     result = ""
-    For i = 1 To UBound(parts) Step 2
-        placeholder = Trim(parts(i))
-        If Not node.Attributes.getNamedItem(placeholder) Is Nothing Then
-            attrValue = node.Attributes.getNamedItem(placeholder).Text
+    For i = 0 To UBound(parts)
+        If i Mod 2 = 0 Then
+            result = result & parts(i)
         Else
-            attrValue = placeholder
+            placeholder = Trim(parts(i))
+            attrValue = GetLabelAttribute(node, placeholder)
+            If attrValue = "" Then
+                result = result & "%" & parts(i) & "%"
+            Else
+                result = result & attrValue
+            End If
         End If
-        result = result & attrValue & vbCrLf
     Next i
-    If Len(result) >= 2 Then
-        result = Left(result, Len(result) - 2)
-    End If
-    FormatLabelText = result
+    FormatLabelText = Trim(result)
 End Function
+
+'------------------------------------------------------------
+Function GetPointCoordinate(ByVal pointNode As MSXML2.IXMLDOMNode, ByVal coordinateName As String, ByVal defaultValue As Single) As Single
+    If Not pointNode.Attributes Is Nothing Then
+        If Not pointNode.Attributes.getNamedItem(coordinateName) Is Nothing Then
+            GetPointCoordinate = Val(pointNode.Attributes.getNamedItem(coordinateName).Text)
+            Exit Function
+        End If
+    End If
+    GetPointCoordinate = defaultValue
+End Function
+
+'------------------------------------------------------------
+Function ShapeCenterX(ByVal shp As Shape) As Single
+    ShapeCenterX = shp.Left + shp.Width / 2
+End Function
+
+'------------------------------------------------------------
+Function ShapeCenterY(ByVal shp As Shape) As Single
+    ShapeCenterY = shp.Top + shp.Height / 2
+End Function
+
+'------------------------------------------------------------
+Function PreferredConnectionSite(ByVal shp As Shape, ByVal towardX As Single, ByVal towardY As Single) As Long
+    On Error Resume Next
+    Dim siteCount As Long
+    siteCount = shp.ConnectionSiteCount
+    If Err.Number <> 0 Or siteCount < 1 Then
+        Err.Clear
+        PreferredConnectionSite = 1
+        Exit Function
+    End If
+    On Error GoTo 0
+
+    If siteCount < 4 Then
+        PreferredConnectionSite = 1
+        Exit Function
+    End If
+
+    Dim dx As Single, dy As Single
+    dx = towardX - ShapeCenterX(shp)
+    dy = towardY - ShapeCenterY(shp)
+    If Abs(dx) > Abs(dy) Then
+        If dx >= 0 Then
+            PreferredConnectionSite = 2
+        Else
+            PreferredConnectionSite = 4
+        End If
+    Else
+        If dy >= 0 Then
+            PreferredConnectionSite = 3
+        Else
+            PreferredConnectionSite = 1
+        End If
+    End If
+
+    If PreferredConnectionSite > siteCount Then PreferredConnectionSite = 1
+End Function
+
+'------------------------------------------------------------
+Sub ConnectConnectorEndpoint(ByVal conn As Shape, ByVal connectBegin As Boolean, ByVal targetShape As Shape, ByVal towardX As Single, ByVal towardY As Single)
+    On Error GoTo Done
+    Dim siteIndex As Long
+    siteIndex = PreferredConnectionSite(targetShape, towardX, towardY)
+    If connectBegin Then
+        conn.ConnectorFormat.BeginConnect targetShape, siteIndex
+    Else
+        conn.ConnectorFormat.EndConnect targetShape, siteIndex
+    End If
+    conn.RerouteConnections
+Done:
+End Sub
+
+'------------------------------------------------------------
+Function GetStyleValue(ByVal styleStr As String, ByVal styleName As String) As String
+    Dim parts As Variant, item As Variant, eqPos As Long
+    Dim key As String, value As String
+    parts = Split(styleStr, ";")
+    For Each item In parts
+        eqPos = InStr(1, CStr(item), "=", vbBinaryCompare)
+        If eqPos > 0 Then
+            key = Trim(Left(CStr(item), eqPos - 1))
+            value = Trim(Mid(CStr(item), eqPos + 1))
+            If StrComp(key, styleName, vbTextCompare) = 0 Then
+                GetStyleValue = value
+                Exit Function
+            End If
+        End If
+    Next item
+    GetStyleValue = ""
+End Function
+
+'------------------------------------------------------------
+Function IsHexColor(ByVal colorValue As String) As Boolean
+    Dim i As Long, ch As String
+    colorValue = Replace(Trim(colorValue), "#", "")
+    If Len(colorValue) <> 6 Then
+        IsHexColor = False
+        Exit Function
+    End If
+    For i = 1 To 6
+        ch = Mid(colorValue, i, 1)
+        If InStr(1, "0123456789ABCDEFabcdef", ch, vbBinaryCompare) = 0 Then
+            IsHexColor = False
+            Exit Function
+        End If
+    Next i
+    IsHexColor = True
+End Function
+
+'------------------------------------------------------------
+Sub ApplyConnectorArrowheads(ByVal conn As Shape, ByVal styleStr As String)
+    Dim startArrow As String, endArrow As String
+    startArrow = LCase(GetStyleValue(styleStr, "startArrow"))
+    endArrow = LCase(GetStyleValue(styleStr, "endArrow"))
+
+    If startArrow <> "" And startArrow <> "none" Then
+        conn.Line.BeginArrowheadStyle = msoArrowheadTriangle
+    Else
+        conn.Line.BeginArrowheadStyle = msoArrowheadNone
+    End If
+
+    If endArrow <> "" And endArrow <> "none" Then
+        conn.Line.EndArrowheadStyle = msoArrowheadTriangle
+    Else
+        conn.Line.EndArrowheadStyle = msoArrowheadNone
+    End If
+End Sub
 
 '------------------------------------------------------------
 Function HasAnyAncestorValue(ByVal node As MSXML2.IXMLDOMNode, valueArray As Variant, _
